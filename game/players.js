@@ -9,6 +9,7 @@ export const createPlayer = () => ({
   roads: [],
   settlements: [],
   cities: [],
+  resorts: [], // optional "Resort" rule: seized opponent cities
 
   developmentCards: [],
   knightsPlayed: 0,
