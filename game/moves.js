@@ -4,15 +4,9 @@ const BUILD_COSTS = {
   road: { brick: 1, lumber: 1 },
   settlement: { brick: 1, lumber: 1, grain: 1, wool: 1 },
   city: { grain: 2, ore: 3 },
-  // From the design doc's optional "Resort" rule: 3 ore, 4 wood, 2 wool, 1
-  // clay. (The doc also lists an alternate "(2 grain, 2 wool, 1 ore)" cost
-  // in parentheses without saying when it'd apply, so we go with the
-  // primary figures.)
   resort: { ore: 3, lumber: 4, wool: 2, brick: 1 },
 };
 
-// Physical piece limits from the real game (5 settlement pieces, 4 city
-// pieces, 15 road pieces per player).
 const MAX_SETTLEMENTS = 5;
 const MAX_CITIES = 4;
 const MAX_ROADS = 15;
@@ -25,6 +19,36 @@ const TERRAIN_TO_RES = {
   mountains: "ore",
 };
 
+const RESOURCE_LABELS = {
+  brick: "Brick",
+  lumber: "Lumber",
+  grain: "Grain",
+  wool: "Wool",
+  ore: "Ore",
+};
+
+function resourceLabel(res) {
+  return RESOURCE_LABELS[res] || res;
+}
+
+function logAction(G, playerId, text, targetPlayerId) {
+  if (!G.chatMessages) G.chatMessages = [];
+  G.logCounter = (G.logCounter || 0) + 1;
+  const entry = {
+    id: `log_${G.logCounter}`,
+    playerId,
+    text,
+    system: true,
+  };
+  if (targetPlayerId !== undefined && targetPlayerId !== null) {
+    entry.targetPlayerId = String(targetPlayerId);
+  }
+  G.chatMessages.push(entry);
+  if (G.chatMessages.length > 200) {
+    G.chatMessages.splice(0, G.chatMessages.length - 200);
+  }
+}
+
 export const moves = {
   rollDice({ G, ctx, random, events }) {
     if (ctx.playerID && String(ctx.playerID) !== String(ctx.currentPlayer))
@@ -36,13 +60,8 @@ export const moves = {
     let roll;
 
     if (diceMode === "wheel") {
-      // A single spin, but weighted so the 2-12 distribution is IDENTICAL
-      // to rolling two dice (1/36 per pip-combination) rather than a flat
-      // 1-in-11 chance per number — otherwise every Season/robber rule that
-      // keys off specific rolls (6/8, 3/11, 2/12...) would suddenly behave
-      // very differently on a whim of which dice mode got picked.
-      const WEIGHTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1]; // sums to 36, for rolls 2..12
-      const pick = random.Die(36); // 1..36
+      const WEIGHTS = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
+      const pick = random.Die(36);
       let cumulative = 0;
       roll = 2;
       for (let i = 0; i < WEIGHTS.length; i++) {
@@ -65,10 +84,12 @@ export const moves = {
     console.log(`Player ${ctx.currentPlayer} rolled ${roll} (mode: ${diceMode})`);
 
     if (roll === 7) {
+      logAction(G, ctx.currentPlayer, "rolled a 7 — the robber is on the move");
       handleRobberDiscard({ G, random });
       G.isRobberPlacing = true;
       events.setStage("placingRobber");
     } else {
+      logAction(G, ctx.currentPlayer, `rolled a ${roll}`);
       distributeResourcesLogic({ G, ctx, roll, random });
     }
   },
@@ -76,8 +97,9 @@ export const moves = {
   placeRobber({ G, ctx, events, random }, hexId) {
     if (hexId === G.board.robberPosition) return "INVALID_MOVE";
     G.board.robberPosition = hexId;
-    G.isRobberPlacing = false; // Turn off placement UI
+    G.isRobberPlacing = false;
     events.setStage("playing");
+    logAction(G, ctx.currentPlayer, "moved the robber");
 
     const potentialVictims = Object.keys(G.players).filter((pid) => {
       if (pid === ctx.currentPlayer) return false;
@@ -102,6 +124,7 @@ export const moves = {
         console.log(
             `Robber: Player ${ctx.currentPlayer} stole ${stolenRes} from Player ${victimId}`,
         );
+        logAction(G, ctx.currentPlayer, "stole a card from {target}", victimId);
       }
     }
   },
@@ -139,9 +162,6 @@ export const moves = {
     }
 
     if (ctx.phase !== "setup") {
-      // Physical piece supply: real Catan gives each player only 5
-      // settlement pieces. Without this cap a player could keep placing
-      // settlements indefinitely as long as they had resources + roads.
       if (player.settlements.length >= MAX_SETTLEMENTS) {
         console.warn(
             `buildSettlement rejected: player ${ctx.currentPlayer} already has the max of ${MAX_SETTLEMENTS} settlements.`,
@@ -174,7 +194,7 @@ export const moves = {
         );
         return "INVALID_MOVE";
       }
-      deductResources(player, BUILD_COSTS.settlement);
+      deductResources(G, player, BUILD_COSTS.settlement);
     } else if (
         player.settlements.length >= 2 ||
         player.settlements.length !== player.roads.length
@@ -191,24 +211,15 @@ export const moves = {
       adjacentHexes: intersectionData.adjacentHexes || [],
     });
     player.victoryPoints += 1;
+    logAction(G, ctx.currentPlayer, "built a settlement");
 
     if (ctx.phase !== "setup") {
-      // A settlement built on an intersection that used to run through the
-      // middle of someone else's road chain severs it, so every player's
-      // longest road needs re-checking, not just the builder's.
       updateLongestRoad(G);
     } else if (player.settlements.length === 2) {
-      // Standard Catan setup rule: the SECOND settlement immediately grants
-      // one resource card for every adjacent hex (desert produces nothing).
-      // This was missing entirely, so every player entered the main phase
-      // with zero resources and had to wait on a lucky dice roll before
-      // they could ever afford to build again — which is exactly what made
-      // it look like "I have a settlement but can never collect enough
-      // resources to build another one."
       (intersectionData.adjacentHexes || []).forEach((hexId) => {
         const hex = G.board.hexes.find((h) => h.id === hexId);
         const resType = hex && TERRAIN_TO_RES[hex.terrain];
-        if (resType) {
+        if (resType && takeFromBank(G, resType, 1)) {
           player.resources[resType] += 1;
         }
       });
@@ -232,7 +243,7 @@ export const moves = {
     const sIdx = player.settlements.findIndex((s) => s.id === intersectionId);
     if (sIdx === -1) return "INVALID_MOVE";
 
-    deductResources(player, BUILD_COSTS.city);
+    deductResources(G, player, BUILD_COSTS.city);
     const [originalSettlement] = player.settlements.splice(sIdx, 1);
 
     player.cities.push({
@@ -241,13 +252,9 @@ export const moves = {
       adjacentHexes: originalSettlement.adjacentHexes || [],
     });
     player.victoryPoints += 1;
+    logAction(G, ctx.currentPlayer, "upgraded a settlement to a city");
   },
 
-  // Optional "Resort" rule: seize another player's CITY (not a plain
-  // settlement) and turn it into your own Resort. Once a spot is a Resort
-  // it can never be taken over again by anyone (not even re-Resorted) —
-  // enforced simply by the fact that it's no longer in anyone's `cities`
-  // array, so this same lookup will never find it as a valid target again.
   buildResort({ G, ctx }, intersectionId) {
     if (ctx.playerID && String(ctx.playerID) !== String(ctx.currentPlayer))
       return "INVALID_MOVE";
@@ -268,10 +275,6 @@ export const moves = {
       return "INVALID_MOVE";
     }
 
-    // Find an OPPONENT's city at this intersection. You can't Resort your
-    // own city (upgrading further isn't the point — it's a land grab), and
-    // an intersection that's a Resort or a bare settlement isn't a valid
-    // target at all.
     let victimId = null;
     let cityIdx = -1;
     for (const pid of Object.keys(G.players)) {
@@ -291,7 +294,7 @@ export const moves = {
       return "INVALID_MOVE";
     }
 
-    deductResources(player, BUILD_COSTS.resort);
+    deductResources(G, player, BUILD_COSTS.resort);
 
     const victim = G.players[victimId];
     const [seizedCity] = victim.cities.splice(cityIdx, 1);
@@ -303,17 +306,13 @@ export const moves = {
       owner: ctx.currentPlayer,
       adjacentHexes: seizedCity.adjacentHexes || [],
     });
-    // Valued the same as a City (2 VP) — the design doc doesn't specify a
-    // point value for the Resort, so this keeps it consistent rather than
-    // making it strictly better than what it replaces.
     player.victoryPoints += 2;
 
     console.log(
         `Player ${ctx.currentPlayer} seized Player ${victimId}'s city at "${intersectionId}" and built a Resort.`,
     );
+    logAction(G, ctx.currentPlayer, "seized {target}'s city and built a Resort", victimId);
 
-    // Ownership of that intersection just changed hands, which can sever or
-    // reconnect road chains passing through it for both players involved.
     updateLongestRoad(G);
   },
 
@@ -328,6 +327,16 @@ export const moves = {
     if (!boardEdge) {
       console.error(
           `Road placement failed: Edge ID "${edgeId}" is not defined in G.board.edges.`,
+      );
+      return "INVALID_MOVE";
+    }
+
+    const isEdgeAlreadyClaimed = Object.values(G.players).some((p) =>
+        p.roads.some((r) => r.id === edgeId),
+    );
+    if (isEdgeAlreadyClaimed) {
+      console.warn(
+          `buildRoad rejected: edge "${edgeId}" already has a road on it.`,
       );
       return "INVALID_MOVE";
     }
@@ -366,10 +375,11 @@ export const moves = {
         return "INVALID_MOVE";
       }
 
-      deductResources(player, cost);
+      deductResources(G, player, cost);
     }
 
     player.roads.push({ id: edgeId, owner: ctx.currentPlayer });
+    logAction(G, ctx.currentPlayer, "built a road");
 
     if (ctx.phase === "setup") {
       events.endTurn();
@@ -389,18 +399,32 @@ export const moves = {
 
     const ratio = getBestBankRatio(G, ctx.currentPlayer, give);
 
-    if (player.resources[give] >= ratio) {
-      player.resources[give] -= ratio;
-      player.resources[receive] += 1;
-
-      console.log(
-          `Player ${ctx.currentPlayer} traded ${ratio} ${give} for 1 ${receive} (ratio ${ratio}:1)`,
-      );
-    } else {
+    if (player.resources[give] < ratio) {
       console.log(
           `Trade failed: Player ${ctx.currentPlayer} only has ${player.resources[give]} ${give}, needs ${ratio}`,
       );
+      return;
     }
+
+    const bank = ensureBank(G);
+    if ((bank[receive] || 0) < 1) {
+      console.log(`Trade failed: the bank is out of ${receive}.`);
+      return;
+    }
+
+    player.resources[give] -= ratio;
+    player.resources[receive] += 1;
+    returnToBank(G, give, ratio);
+    bank[receive] -= 1;
+
+    console.log(
+        `Player ${ctx.currentPlayer} traded ${ratio} ${give} for 1 ${receive} (ratio ${ratio}:1)`,
+    );
+    logAction(
+        G,
+        ctx.currentPlayer,
+        `traded ${ratio} ${resourceLabel(give)} for 1 ${resourceLabel(receive)} with the bank`,
+    );
   },
 
   payToMoveRobber({ G, ctx }) {
@@ -415,9 +439,13 @@ export const moves = {
     const canAfford = costs.every((res) => player.resources[res] >= 1);
 
     if (canAfford) {
-      costs.forEach((res) => (player.resources[res] -= 1));
+      costs.forEach((res) => {
+        player.resources[res] -= 1;
+        returnToBank(G, res, 1);
+      });
       G.board.robberPosition = "neutral";
       console.log(`Player ${ctx.currentPlayer} paid to clear the Robber.`);
+      logAction(G, ctx.currentPlayer, "paid resources to clear the robber");
     }
   },
 
@@ -442,6 +470,7 @@ export const moves = {
       });
 
       console.log(`Trade offered: P${ctx.currentPlayer} -> P${targetPlayerId}`);
+      logAction(G, ctx.currentPlayer, "offered a trade to {target}", targetPlayerId);
     }
   },
 
@@ -463,7 +492,6 @@ export const moves = {
       text: trimmed,
     });
 
-    // Keep the log from growing unbounded over a long match
     if (G.chatMessages.length > 200) {
       G.chatMessages.splice(0, G.chatMessages.length - 200);
     }
@@ -492,6 +520,8 @@ export const moves = {
       buyer.resources[offer.receive.type] -= offer.receive.amount;
       buyer.resources[offer.give.type] += offer.give.amount;
 
+      logAction(G, offer.to, "accepted a trade with {target}", offer.from);
+
       G.activeOffer = null;
       events.setActivePlayers({ currentPlayer: "playing" });
     }
@@ -508,6 +538,11 @@ export const moves = {
         actingPlayer === String(offer.to) ||
         actingPlayer === String(offer.from)
     ) {
+      if (actingPlayer === String(offer.to)) {
+        logAction(G, actingPlayer, "declined a trade offer from {target}", offer.from);
+      } else {
+        logAction(G, actingPlayer, "withdrew a trade offer");
+      }
       G.activeOffer = null;
       events.setActivePlayers({ currentPlayer: "playing" });
     }
@@ -515,6 +550,7 @@ export const moves = {
 
   endTurn({ G, ctx, events }) {
     if (G.isRobberPlacing) return "INVALID_MOVE";
+    logAction(G, ctx.currentPlayer, "ended their turn");
     G.diceRolled = false;
     G.diceValue = null;
     G.devCardPlayedThisTurn = false;
@@ -536,19 +572,16 @@ export const moves = {
     if (!G.devCardDeck || G.devCardDeck.length === 0) return "INVALID_MOVE";
     if (!hasEnoughResources(player, DEV_CARD_COST)) return "INVALID_MOVE";
 
-    deductResources(player, DEV_CARD_COST);
+    deductResources(G, player, DEV_CARD_COST);
 
-    // Shuffle-and-draw from the remaining deck each time; avoids depending on
-    // the random plugin being available at setup() time.
     const shuffled = random.Shuffle(G.devCardDeck);
     const card = { ...shuffled[0], boughtTurn: G.turnCount };
     G.devCardDeck = shuffled.slice(1);
 
     player.developmentCards.push(card);
+    logAction(G, ctx.currentPlayer, "bought a development card");
 
     if (card.type === "victoryPoint") {
-      // Counted immediately toward the win condition; kept out of the public
-      // view via playerView so it stays secret to opponents until it matters.
       player.victoryPoints += 1;
     }
   },
@@ -565,11 +598,10 @@ export const moves = {
     player.developmentCards.splice(idx, 1);
     player.knightsPlayed += 1;
     G.devCardPlayedThisTurn = true;
+    logAction(G, ctx.currentPlayer, "played a Knight card");
 
     checkLargestArmy(G, ctx.currentPlayer);
 
-    // Reuse the existing robber-placement flow (same one triggered by
-    // rolling a 7), just without the >7-card discard step.
     G.isRobberPlacing = true;
     events.setStage("placingRobber");
   },
@@ -586,6 +618,7 @@ export const moves = {
 
     player.developmentCards.splice(idx, 1);
     G.devCardPlayedThisTurn = true;
+    logAction(G, ctx.currentPlayer, `played Monopoly and claimed all ${resourceLabel(resourceType)}`);
 
     let total = 0;
     Object.keys(G.players).forEach((pid) => {
@@ -616,8 +649,6 @@ export const moves = {
     const idx = findPlayableCardIndex(player, "roadBuilding", G.turnCount);
     if (idx === -1) return "INVALID_MOVE";
 
-    // Validate the whole batch before placing any of it, so a bad 2nd pick
-    // can't leave a free road placed with no way to undo it.
     const seen = new Set();
     for (const edgeId of edgeIds) {
       if (seen.has(edgeId)) return "INVALID_MOVE";
@@ -626,8 +657,6 @@ export const moves = {
       if (player.roads.some((r) => r.id === edgeId)) return "INVALID_MOVE";
     }
 
-    // Roads placed later in the batch may rely on the earlier ones in the
-    // same batch for connectivity, so validate/place incrementally.
     const placed = [];
     for (const edgeId of edgeIds) {
       if (!isConnectedToPlayer(G, ctx.currentPlayer, edgeId)) {
@@ -639,6 +668,11 @@ export const moves = {
 
     player.developmentCards.splice(idx, 1);
     G.devCardPlayedThisTurn = true;
+    logAction(
+        G,
+        ctx.currentPlayer,
+        `played Road Building and built ${placed.length} free road${placed.length > 1 ? "s" : ""}`,
+    );
     updateLongestRoad(G);
   },
 
@@ -658,9 +692,21 @@ export const moves = {
 
     player.developmentCards.splice(idx, 1);
     G.devCardPlayedThisTurn = true;
+    logAction(
+        G,
+        ctx.currentPlayer,
+        `played Year of Plenty and took a ${resourceLabel(resourceType1)} and a ${resourceLabel(resourceType2)}`,
+    );
 
-    player.resources[resourceType1] += 1;
-    player.resources[resourceType2] += 1;
+    [resourceType1, resourceType2].forEach((resType) => {
+      if (takeFromBank(G, resType, 1)) {
+        player.resources[resType] += 1;
+      } else {
+        console.log(
+            `Year of Plenty: the bank is out of ${resType}, player ${ctx.currentPlayer} doesn't receive it.`,
+        );
+      }
+    });
   },
 };
 
@@ -668,10 +714,6 @@ function hasEnoughResources(player, cost) {
   return Object.keys(cost).every((res) => player.resources[res] >= cost[res]);
 }
 
-// Best (lowest) bank-trade ratio available to a player for a given resource:
-// 4:1 by default, 3:1 if they have a settlement/city on a generic harbor,
-// 2:1 if they have one on that specific resource's harbor. Harbor access is
-// recorded directly on the intersection by board.js's generateHarbors().
 export function getBestBankRatio(G, playerID, resource) {
   const player = G.players[playerID];
   if (!player) return 4;
@@ -687,9 +729,33 @@ export function getBestBankRatio(G, playerID, resource) {
   return best;
 }
 
-function deductResources(player, cost) {
+function ensureBank(G) {
+  if (!G.bank) {
+    G.bank = RESOURCES.reduce((acc, r) => {
+      acc[r] = 19;
+      return acc;
+    }, {});
+  }
+  return G.bank;
+}
+
+function returnToBank(G, resource, amount) {
+  if (amount <= 0) return;
+  const bank = ensureBank(G);
+  bank[resource] = (bank[resource] || 0) + amount;
+}
+
+function takeFromBank(G, resource, amount) {
+  const bank = ensureBank(G);
+  if ((bank[resource] || 0) < amount) return false;
+  bank[resource] -= amount;
+  return true;
+}
+
+function deductResources(G, player, cost) {
   Object.keys(cost).forEach((res) => {
     player.resources[res] -= cost[res];
+    returnToBank(G, res, cost[res]);
   });
 }
 
@@ -700,6 +766,7 @@ export function isIntersectionConnectedToPlayerRoad(G, playerID, intersectionId)
 }
 
 function distributeResourcesLogic({ G, roll, random }) {
+  const bank = ensureBank(G);
   const seasonsEnabled = !G.settings || G.settings.seasonsEnabled !== false;
   const season = seasonsEnabled ? G.season : null;
   console.log(
@@ -725,12 +792,15 @@ function distributeResourcesLogic({ G, roll, random }) {
           if (held.length > 0) {
             const toLose = random.Shuffle(held)[0];
             player.resources[toLose] -= 1;
+            returnToBank(G, toLose, 1);
           }
         }
       });
     }
     return;
   }
+
+  const earnings = {};
 
   G.board.hexes.forEach((hex) => {
     let shouldProduce = hex.number === roll;
@@ -760,44 +830,70 @@ function distributeResourcesLogic({ G, roll, random }) {
 
       const resType = TERRAIN_TO_RES[hex.terrain];
       if (!resType) return;
+      if (!earnings[resType]) earnings[resType] = {};
 
       Object.keys(G.players).forEach((pId) => {
         const p = G.players[pId];
+        let amount = 0;
+
         p.settlements.forEach((s) => {
-          if (s?.adjacentHexes?.includes(hex.id)) {
-            p.resources[resType] += sAmount;
-          }
+          if (s?.adjacentHexes?.includes(hex.id)) amount += sAmount;
         });
-
         p.cities.forEach((c) => {
-          if (c?.adjacentHexes?.includes(hex.id)) {
-            p.resources[resType] += cAmount;
-          }
+          if (c?.adjacentHexes?.includes(hex.id)) amount += cAmount;
+        });
+        (p.resorts || []).forEach((r) => {
+          if (r?.adjacentHexes?.includes(hex.id)) amount += cAmount;
         });
 
-        (p.resorts || []).forEach((r) => {
-          if (r?.adjacentHexes?.includes(hex.id)) {
-            p.resources[resType] += cAmount;
-          }
-        });
+        if (amount > 0) {
+          earnings[resType][pId] = (earnings[resType][pId] || 0) + amount;
+        }
       });
+    }
+  });
+
+  Object.entries(earnings).forEach(([resType, byPlayer]) => {
+    const recipients = Object.keys(byPlayer);
+    const totalDemand = recipients.reduce((sum, pid) => sum + byPlayer[pid], 0);
+    const supply = bank[resType] ?? 0;
+
+    if (supply >= totalDemand) {
+      recipients.forEach((pid) => {
+        G.players[pid].resources[resType] += byPlayer[pid];
+      });
+      bank[resType] = supply - totalDemand;
+    } else if (recipients.length === 1) {
+      const pid = recipients[0];
+      G.players[pid].resources[resType] += supply;
+      bank[resType] = 0;
+      console.log(
+          `Bank ran short on ${resType}: player ${pid} received ${supply} instead of ${totalDemand}.`,
+      );
+    } else {
+      console.log(
+          `Bank ran short on ${resType}: no one receives it this roll (demand ${totalDemand}, supply ${supply}).`,
+      );
     }
   });
 }
 
 function handleRobberDiscard({ G, random }) {
-  Object.values(G.players).forEach((player) => {
+  Object.entries(G.players).forEach(([pid, player]) => {
     const total = Object.values(player.resources).reduce((a, b) => a + b, 0);
     if (total > 7) {
       let discardCount = Math.floor(total / 2);
+      const discardedTotal = discardCount;
       while (discardCount > 0) {
         const available = Object.keys(player.resources).filter(
             (k) => player.resources[k] > 0,
         );
         const resToDrop = random.Shuffle(available)[0];
         player.resources[resToDrop]--;
+        returnToBank(G, resToDrop, 1);
         discardCount--;
       }
+      logAction(G, pid, `discarded ${discardedTotal} cards to the robber`);
     }
   });
 }
@@ -853,12 +949,6 @@ function advanceSeason(G) {
   console.log(`Season advanced to: ${G.season}`);
 }
 
-// Longest continuous chain of a single player's own roads, in segments.
-// Roads form a graph over board intersections; we DFS every simple path
-// (no repeated edges) and take the longest. An intersection occupied by an
-// OPPONENT's settlement/city blocks further travel past it (their building
-// severs the road), matching the official rule — but doesn't prevent an
-// edge from simply ending there.
 export function computeLongestRoad(G, playerId) {
   const player = G.players[playerId];
   const roadIds = player.roads.map((r) => r.id);
@@ -889,7 +979,7 @@ export function computeLongestRoad(G, playerId) {
 
   function dfs(node, length) {
     if (length > best) best = length;
-    if (opponentIntersections.has(node)) return; // road severed here
+    if (opponentIntersections.has(node)) return;
     for (const { edgeId, next } of adjacency[node] || []) {
       if (visitedEdges.has(edgeId)) continue;
       visitedEdges.add(edgeId);
@@ -902,11 +992,6 @@ export function computeLongestRoad(G, playerId) {
   return best;
 }
 
-// Recomputes every player's longest road and awards/moves/revokes the 2 VP
-// Longest Road card. Mirrors the official tie-breaking rule: a challenger
-// only takes the card with a STRICTLY longer road than the current holder;
-// if nobody currently holds it, it's only awarded when there's a single,
-// unique leader at >= 5 (a tie among the leaders means nobody gets it yet).
 function updateLongestRoad(G) {
   const lengths = {};
   Object.keys(G.players).forEach((pid) => {
@@ -926,6 +1011,7 @@ function updateLongestRoad(G) {
       G.players[currentHolder].hasLongestRoad = false;
       G.longestRoadHolder = null;
       console.log(`Player ${currentHolder} lost Longest Road (road cut).`);
+      logAction(G, currentHolder, "lost Longest Road");
     }
     return;
   }
@@ -936,17 +1022,18 @@ function updateLongestRoad(G) {
   if (!currentHolder || !leaders.includes(currentHolder)) {
     newHolder = leaders.length === 1 ? leaders[0] : null;
   }
-  // else: current holder is still at (or tied for) the max — incumbent keeps it.
 
   if (newHolder !== currentHolder) {
     if (currentHolder) {
       G.players[currentHolder].victoryPoints -= 2;
       G.players[currentHolder].hasLongestRoad = false;
+      logAction(G, currentHolder, "lost Longest Road");
     }
     if (newHolder) {
       G.players[newHolder].victoryPoints += 2;
       G.players[newHolder].hasLongestRoad = true;
       console.log(`Player ${newHolder} claimed Longest Road (${maxLen} segments).`);
+      logAction(G, newHolder, "claimed Longest Road");
     }
     G.longestRoadHolder = newHolder;
   }
@@ -967,22 +1054,19 @@ function checkLargestArmy(G, playerID) {
     if (currentHolder) {
       G.players[currentHolder].victoryPoints -= 2;
       G.players[currentHolder].hasLargestArmy = false;
+      logAction(G, currentHolder, "lost Largest Army");
     }
     G.largestArmyHolder = playerID;
     player.victoryPoints += 2;
     player.hasLargestArmy = true;
 
-    // Per the seasons rules, the track also rotates whenever Largest Army
-    // changes hands, in addition to every 5 turns.
     advanceSeason(G);
     console.log(`Player ${playerID} claimed Largest Army. Season → ${G.season}`);
+    logAction(G, playerID, "claimed Largest Army");
   }
 }
 
 function findPlayableCardIndex(player, type, currentTurn) {
-  // A card can't be played the same turn it was bought (standard Catan rule;
-  // not stated in the design doc, but included for fairness/parity with the
-  // physical game).
   return player.developmentCards.findIndex(
       (c) => c.type === type && c.boughtTurn !== currentTurn,
   );

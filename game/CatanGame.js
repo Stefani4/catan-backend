@@ -10,13 +10,6 @@ export const CatanGame = {
   minPlayers: 2,
   maxPlayers: 4,
 
-  // Checked after every move, regardless of phase. Once a player's total VP
-  // (settlements + cities + Longest Road + Largest Army + revealed/hidden VP
-  // dev cards, all of which already accumulate into player.victoryPoints)
-  // reaches the target, the match ends and boardgame.io stops accepting
-  // further moves. If somehow more than one player crosses the line on the
-  // same move, the current player wins ties, matching physical Catan where
-  // you only get to check for a win on your own turn.
   endIf: ({ G, ctx }) => {
     const target =
         G.settings?.victoryPointsTarget ??
@@ -35,18 +28,6 @@ export const CatanGame = {
       start: true,
       next: "main",
       turn: {
-        // Official Catan setup order is a "snake" draft: player 1, 2, ...,
-        // N places their FIRST settlement+road, then it reverses — N, ...,
-        // 2, 1 — for the SECOND. This gives the last player in turn order
-        // two placements in a row (their 1st immediately followed by their
-        // 2nd), which is the intentional balancing mechanic: they're
-        // disadvantaged by going last in the first lap, so they get first
-        // pick again on the way back.
-        //
-        // G.setupTurnCount (bumped once per turn via onBegin below) tracks
-        // how many setup turns have elapsed so far, which is all `next`
-        // needs to know whether we're still on the forward lap, just
-        // reversing direction, or on the backward lap.
         onBegin: ({ G }) => {
           G.setupTurnCount = (G.setupTurnCount || 0) + 1;
         },
@@ -55,9 +36,9 @@ export const CatanGame = {
           next: ({ G, ctx }) => {
             const n = ctx.numPlayers;
             const turnsSoFar = G.setupTurnCount || 1;
-            if (turnsSoFar < n) return ctx.playOrderPos + 1; // forward lap
-            if (turnsSoFar === n) return ctx.playOrderPos; // reverse in place
-            return Math.max(0, ctx.playOrderPos - 1); // backward lap
+            if (turnsSoFar < n) return ctx.playOrderPos + 1;
+            if (turnsSoFar === n) return ctx.playOrderPos;
+            return Math.max(0, ctx.playOrderPos - 1);
           },
         },
         activePlayers: { currentPlayer: "placing", others: "idle" },
@@ -146,10 +127,6 @@ export const CatanGame = {
   },
   plugins: [{ name: "random" }],
 
-  // Development cards should stay secret (per the design doc, VP cards
-  // especially). Each player sees their own hand in full; everyone else's
-  // cards are redacted to opaque placeholders, but the count is preserved so
-  // the UI can still show "Player 2 has 3 dev cards".
   playerView: ({ G, ctx, playerID }) => {
     if (playerID === undefined || playerID === null) return G;
 

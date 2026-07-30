@@ -8,9 +8,6 @@ function shuffle(array) {
   return array;
 }
 
-// The 6 axial-coordinate unit steps between neighboring hexes (pointy-top
-// layout), used both to generate a hexagon-shaped board of any radius and
-// to derive which generated hexes are adjacent to each other.
 const AXIAL_DIRECTIONS = [
   { q: 1, r: 0 },
   { q: 1, r: -1 },
@@ -20,10 +17,6 @@ const AXIAL_DIRECTIONS = [
   { q: 0, r: 1 },
 ];
 
-// All axial (q, r) coordinates within `radius` hexes of the center,
-// row-major top to bottom — i.e. every hex in a regular hexagon-shaped
-// board. radius=2 gives the standard 19-hex board, radius=3 gives a
-// 37-hex "Large" board, etc. Count = 3*radius^2 + 3*radius + 1.
 function generateHexagonAxialCoords(radius) {
   const coords = [];
   for (let q = -radius; q <= radius; q++) {
@@ -36,10 +29,6 @@ function generateHexagonAxialCoords(radius) {
   return coords;
 }
 
-// Adjacency list (by index into `axialCoords`) derived purely from the
-// coordinates themselves, replacing what used to be a hardcoded table for
-// the fixed 19-hex board — this is what lets createBoard() support any
-// board radius/shape without hand-maintaining a matching adjacency table.
 function computeHexAdjacency(axialCoords) {
   const key = (q, r) => `${q},${r}`;
   const index = new Map(axialCoords.map((c, i) => [key(c.q, c.r), i]));
@@ -53,10 +42,6 @@ function computeHexAdjacency(axialCoords) {
   });
 }
 
-// Scales the standard board's terrain ratio (3 hills : 4 forest : 4 fields :
-// 4 pasture : 3 mountains, +1 desert per ~19 hexes) up or down to fit any
-// hex count, so a "Large" board gets proportionally the same land mix
-// rather than a hardcoded set of counts that only adds up to 19.
 function computeTerrainCounts(hexCount) {
   const desertCount = Math.max(1, Math.round(hexCount / 19));
   const landCount = hexCount - desertCount;
@@ -68,8 +53,6 @@ function computeTerrainCounts(hexCount) {
   let assigned = 0;
   keys.forEach((k, i) => {
     if (i === keys.length - 1) {
-      // Last one absorbs any rounding remainder so counts always sum to
-      // exactly landCount.
       counts[k] = landCount - assigned;
     } else {
       const c = Math.round((ratios[k] / ratioSum) * landCount);
@@ -81,20 +64,17 @@ function computeTerrainCounts(hexCount) {
   return counts;
 }
 
-// Repeats the standard 18-token pattern (which already has the correct
-// relative 2d6 frequency — two 6s, two 8s, one 2, one 12, etc.) enough
-// times to cover any land-hex count, then trims to size and shuffles. This
-// keeps the same "6s and 8s are the hot tiles" character on a bigger board
-// instead of inventing a new distribution.
 function generateNumberPool(landCount) {
   const pool = [];
   while (pool.length < landCount) pool.push(...NUMBER_TOKENS);
   return shuffle(pool.slice(0, landCount));
 }
 
-// Circumradius of each hex in px. Chosen to match the previous ~100x110 tile
-// footprint (width = size*sqrt(3), height = size*2).
 const HEX_SIZE = 57;
+const HEX_SIZE_BY_MAP_TYPE = {
+  standard: HEX_SIZE,
+  large: 42,
+};
 const ROUND_PRECISION = 3;
 
 function round(n) {
@@ -109,9 +89,6 @@ function axialToPixel(q, r, size) {
   };
 }
 
-// Pointy-top hex corners in screen space (y grows downward), starting at the
-// top vertex and going clockwise: top, upperRight, lowerRight, bottom,
-// lowerLeft, upperLeft. Matches the hex tile's clip-path polygon order.
 function hexCorners(cx, cy, size) {
   const angles = [270, 330, 30, 90, 150, 210];
   return angles.map((deg) => {
@@ -131,11 +108,6 @@ function edgeKey(a, b) {
   return [a, b].sort().join("--");
 }
 
-// A boundary edge is one that belongs to only a single hex (i.e. it's part
-// of the outer coastline, facing open sea) rather than being shared between
-// two neighboring hexes. We detect this by intersecting the adjacentHexes
-// lists of its two endpoints: an interior (shared) edge's endpoints have 2
-// hexes in common, a coastline edge's endpoints only have 1 hex in common.
 function findBoundaryEdges(intersections, edges) {
   return Object.values(edges).filter((edge) => {
     const [a, b] = edge.endpoints;
@@ -146,10 +118,6 @@ function findBoundaryEdges(intersections, edges) {
   });
 }
 
-// Walks the coastline into a single ordered loop, starting anywhere. Every
-// boundary vertex touches exactly 2 boundary edges (it's a simple polygon),
-// so at each step we just hop to the "other" boundary edge at our new
-// endpoint until we're back where we started.
 function orderBoundaryLoop(boundaryEdges) {
   const byVertex = {};
   boundaryEdges.forEach((edge) => {
@@ -179,7 +147,6 @@ function orderBoundaryLoop(boundaryEdges) {
   return ordered;
 }
 
-// Standard Catan harbor set: 4 generic 3:1 ports + one 2:1 port per resource.
 const HARBOR_KINDS = [
   { type: "generic", ratio: 3 },
   { type: "generic", ratio: 3 },
@@ -192,9 +159,6 @@ const HARBOR_KINDS = [
   { type: "ore", ratio: 2 },
 ];
 
-// Places the 9 harbors evenly around the coastline loop, then records which
-// 2 intersections each harbor grants port access to directly on those
-// intersection objects (a settlement/city on either endpoint benefits).
 function generateHarbors(intersections, edges, boardCenter) {
   const boundaryEdges = findBoundaryEdges(intersections, edges);
   const loop = orderBoundaryLoop(boundaryEdges);
@@ -231,8 +195,6 @@ function generateHarbors(intersections, edges, boardCenter) {
     harbors.push(harbor);
 
     [a, b].forEach((intersection) => {
-      // An intersection could in theory be pulled toward 2 harbors if they
-      // ended up adjacent; keep whichever has the better (lower) ratio.
       if (!intersection.harbor || intersection.harbor.ratio > harbor.ratio) {
         intersection.harbor = { type: harbor.type, ratio: harbor.ratio };
       }
@@ -278,6 +240,7 @@ function generateConstrainedTerrains(hexAdjacency, terrainCounts) {
 
 export const createBoard = (mapType = "standard") => {
   const { hexRadius } = MAP_TYPES[mapType] || MAP_TYPES.standard;
+  const hexSize = HEX_SIZE_BY_MAP_TYPE[mapType] ?? HEX_SIZE;
   const axialCoords = generateHexagonAxialCoords(hexRadius);
   const hexAdjacency = computeHexAdjacency(axialCoords);
   const hexCount = axialCoords.length;
@@ -292,7 +255,7 @@ export const createBoard = (mapType = "standard") => {
   const hexes = terrains.map((terrain, index) => {
     const isDesert = terrain === "desert";
     const { q, r } = axialCoords[index];
-    const { x, y } = axialToPixel(q, r, HEX_SIZE);
+    const { x, y } = axialToPixel(q, r, hexSize);
     return {
       id: `hex_${index}`,
       terrain,
@@ -301,9 +264,6 @@ export const createBoard = (mapType = "standard") => {
       hasRobber: isDesert,
       q,
       r,
-      // Raw (unrounded) center, used for corner math so shared corners between
-      // neighboring hexes land on identical floats before rounding for the
-      // merge key. Rounded to 'x'/'y' for output only, after corners are built.
       _rawX: x,
       _rawY: y,
       x: round(x),
@@ -315,7 +275,7 @@ export const createBoard = (mapType = "standard") => {
   const edges = {};
 
   hexes.forEach((hex) => {
-    const corners = hexCorners(hex._rawX, hex._rawY, HEX_SIZE);
+    const corners = hexCorners(hex._rawX, hex._rawY, hexSize);
     const cornerIds = corners.map(({ x, y }) => {
       const id = vertexKey(x, y);
       if (!intersections[id]) {
@@ -364,7 +324,7 @@ export const createBoard = (mapType = "standard") => {
   const minY = Math.min(...allY);
   const maxX = Math.max(...allX);
   const maxY = Math.max(...allY);
-  const padding = HEX_SIZE * 0.5;
+  const padding = hexSize * 0.5;
 
   const shiftX = -minX + padding;
   const shiftY = -minY + padding;
@@ -393,9 +353,9 @@ export const createBoard = (mapType = "standard") => {
     harbors,
     robberPosition: hexes.find((h) => h.terrain === "desert")?.id || "hex_0",
     layout: {
-      hexSize: HEX_SIZE,
-      hexWidth: HEX_SIZE * Math.sqrt(3),
-      hexHeight: HEX_SIZE * 2,
+      hexSize: hexSize,
+      hexWidth: hexSize * Math.sqrt(3),
+      hexHeight: hexSize * 2,
       width: round(maxX - minX + padding * 2),
       height: round(maxY - minY + padding * 2),
     },
