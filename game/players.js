@@ -9,6 +9,7 @@ export const createPlayer = () => ({
   roads: [],
   settlements: [],
   cities: [],
+  resorts: [],
 
   developmentCards: [],
   knightsPlayed: 0,
