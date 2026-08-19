@@ -1,11 +1,18 @@
 import { Server } from "boardgame.io/dist/cjs/server.js";
 import { CatanGame } from "../game/CatanGame.js";
 
+const PORT = process.env.PORT || 8000;
+
+const origins = process.env.CLIENT_ORIGINS
+    ? process.env.CLIENT_ORIGINS.split(",").map((o) => o.trim())
+    : ["http://localhost:5173"];
+
 const server = Server({
   games: [CatanGame],
-  origins: ["http://localhost:5173"],
+  origins,
 });
 
-server.run(8000);
+server.run(PORT);
 
-console.log("Backend running on http://localhost:8000");
+console.log(`Backend running on port ${PORT}`);
+console.log(`Allowed origins: ${origins.join(", ")}`);

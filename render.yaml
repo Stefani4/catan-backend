@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: catan-backend
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: CLIENT_ORIGINS
+        sync: false
