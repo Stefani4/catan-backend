@@ -17,6 +17,8 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "boardgame.io": "^0.50.2"
+    "@koa/router": "^15.7.0",
+    "boardgame.io": "^0.50.2",
+    "koa-body": "^8.0.0"
   }
 }
