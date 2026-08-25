@@ -79,10 +79,18 @@ Runs the Vitest suite in `game/__tests__/`: board generation invariants, initial
 git clone <repo link>
 cd catan-backend
 npm install
-node src/index.js     
-npm start           # production
+npm run dev     # auto-reloading dev server
+npm start       # production
 ```
 
 The server runs on **`http://localhost:8000`** by default, and only allows connections from `http://localhost:5173` (the default frontend dev URL) — update the `origins` value in `src/server.js` if you deploy or change ports.
 
 > **Note:** this version reads the port and allowed origin as fixed values in `src/server.js`. If you're deploying to a host like Render, swap these for `process.env.PORT` and `process.env.CLIENT_ORIGINS` so the server can bind to the platform's assigned port and accept your deployed frontend's origin.
+
+## 🚀 Hosting
+
+This backend is hosted on **[Render](https://render.com/)**.
+
+## 👤 Authors
+
+Stefani Akimovska 237014, Anastasija Mishevska 237029, Viktor Trajkovski 237019
