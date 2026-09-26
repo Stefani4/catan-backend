@@ -48,12 +48,14 @@ export const CatanGame = {
               buildSettlement: moves.buildSettlement,
               buildRoad: moves.buildRoad,
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
               clearTradeStatus: moves.clearTradeStatus,
             },
           },
           idle: {
             moves: {
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
             },
           },
         },
@@ -77,6 +79,7 @@ export const CatanGame = {
           idle: {
             moves: {
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
             },
           },
 
@@ -93,6 +96,7 @@ export const CatanGame = {
               cancelTrade: moves.cancelTrade,
               endTurn: moves.endTurn,
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
               clearTradeStatus: moves.clearTradeStatus,
               buyDevelopmentCard: moves.buyDevelopmentCard,
               playKnight: moves.playKnight,
@@ -106,6 +110,7 @@ export const CatanGame = {
             moves: {
               placeRobber: moves.placeRobber,
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
             },
           },
 
@@ -114,6 +119,7 @@ export const CatanGame = {
               acceptTrade: moves.acceptTrade,
               cancelTrade: moves.cancelTrade,
               sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
             },
           },
         },
