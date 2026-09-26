@@ -7,6 +7,28 @@ describe("createBoard", () => {
     expect(createBoard("large").hexes.length).toBe(37);
   });
 
+  it("generates the correct hex count for the ribbon (rectangle) and delta (triangle) shapes", () => {
+    expect(createBoard("ribbon").hexes.length).toBe(20);
+    expect(createBoard("delta").hexes.length).toBe(21);
+  });
+
+  it("never leaves a hex without a terrain, across every board shape", () => {
+    ["standard", "large", "ribbon", "delta"].forEach((type) => {
+      const board = createBoard(type);
+      board.hexes.forEach((hex) => {
+        expect(hex.terrain).toBeTruthy();
+      });
+    });
+  });
+
+  it("produces a sensible board footprint (non-zero, comparable to standard) for every shape", () => {
+    ["standard", "large", "ribbon", "delta"].forEach((type) => {
+      const { layout } = createBoard(type);
+      expect(layout.width).toBeGreaterThan(200);
+      expect(layout.height).toBeGreaterThan(200);
+    });
+  });
+
   it("has exactly one desert hex", () => {
     const board = createBoard("standard");
     const deserts = board.hexes.filter((h) => h.terrain === "desert");

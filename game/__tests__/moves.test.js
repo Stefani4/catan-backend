@@ -511,6 +511,29 @@ describe("turn flow", () => {
     moves.sendChat({ G, ctx: ctxFor(0), playerID: "0" }, "  hello  ");
     expect(G.chatMessages[0].text).toBe("hello");
   });
+
+  it("sendReaction rejects an emoji outside the allowed set", () => {
+    const G = makeG(2);
+    const result = moves.sendReaction({ G, ctx: ctxFor(0), playerID: "0" }, "💩");
+    expect(result).toBe("INVALID_MOVE");
+    expect(G.reactions.length).toBe(0);
+  });
+
+  it("sendReaction records an allowed emoji for the sending player", () => {
+    const G = makeG(2);
+    moves.sendReaction({ G, ctx: ctxFor(0), playerID: "0" }, "🤝");
+    expect(G.reactions.length).toBe(1);
+    expect(G.reactions[0].playerId).toBe("0");
+    expect(G.reactions[0].emoji).toBe("🤝");
+  });
+
+  it("sendReaction keeps only the most recent 30 reactions", () => {
+    const G = makeG(2, { reactions: [] });
+    for (let i = 0; i < 35; i++) {
+      moves.sendReaction({ G, ctx: ctxFor(0), playerID: "0" }, "👍");
+    }
+    expect(G.reactions.length).toBe(30);
+  });
 });
 
 describe("development cards", () => {

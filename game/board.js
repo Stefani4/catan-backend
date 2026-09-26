@@ -17,7 +17,7 @@ const AXIAL_DIRECTIONS = [
   { q: 0, r: 1 },
 ];
 
-function generateHexagonAxialCoords(radius) {
+export function generateHexagonAxialCoords(radius) {
   const coords = [];
   for (let q = -radius; q <= radius; q++) {
     const r1 = Math.max(-radius, -q - radius);
@@ -29,7 +29,44 @@ function generateHexagonAxialCoords(radius) {
   return coords;
 }
 
-function computeHexAdjacency(axialCoords) {
+// A "ribbon" of `rows` staggered rows of `cols` hexes each. Staggering every
+// row by floor(r/2) keeps the offset axial coordinates packed into a true
+// rectangle in pixel space instead of a slanted parallelogram.
+function generateRectangleAxialCoords(cols, rows) {
+  const coords = [];
+  for (let r = 0; r < rows; r++) {
+    const rowOffset = Math.floor(r / 2);
+    for (let q = -rowOffset; q < cols - rowOffset; q++) {
+      coords.push({ q, r });
+    }
+  }
+  return coords;
+}
+
+// A triangular island: row 0 has `side` hexes, each row after has one fewer.
+function generateTriangleAxialCoords(side) {
+  const coords = [];
+  for (let r = 0; r < side; r++) {
+    for (let q = 0; q < side - r; q++) {
+      coords.push({ q, r });
+    }
+  }
+  return coords;
+}
+
+function generateAxialCoords(mapConfig) {
+  switch (mapConfig.shape) {
+    case "rectangle":
+      return generateRectangleAxialCoords(mapConfig.cols, mapConfig.rows);
+    case "triangle":
+      return generateTriangleAxialCoords(mapConfig.side);
+    case "hexagon":
+    default:
+      return generateHexagonAxialCoords(mapConfig.hexRadius);
+  }
+}
+
+export function computeHexAdjacency(axialCoords) {
   const key = (q, r) => `${q},${r}`;
   const index = new Map(axialCoords.map((c, i) => [key(c.q, c.r), i]));
   return axialCoords.map((c) => {
@@ -42,7 +79,7 @@ function computeHexAdjacency(axialCoords) {
   });
 }
 
-function computeTerrainCounts(hexCount) {
+export function computeTerrainCounts(hexCount) {
   const desertCount = Math.max(1, Math.round(hexCount / 19));
   const landCount = hexCount - desertCount;
   const ratios = { hills: 3, forest: 4, fields: 4, pasture: 4, mountains: 3 };
@@ -64,7 +101,7 @@ function computeTerrainCounts(hexCount) {
   return counts;
 }
 
-function generateNumberPool(landCount) {
+export function generateNumberPool(landCount) {
   const pool = [];
   while (pool.length < landCount) pool.push(...NUMBER_TOKENS);
   return shuffle(pool.slice(0, landCount));
@@ -74,6 +111,8 @@ const HEX_SIZE = 57;
 const HEX_SIZE_BY_MAP_TYPE = {
   standard: HEX_SIZE,
   large: 42,
+  ribbon: 52,
+  delta: 52,
 };
 const ROUND_PRECISION = 3;
 
@@ -82,7 +121,7 @@ function round(n) {
   return Object.is(r, -0) ? 0 : r;
 }
 
-function axialToPixel(q, r, size) {
+export function axialToPixel(q, r, size) {
   return {
     x: size * Math.sqrt(3) * (q + r / 2),
     y: size * 1.5 * r,
@@ -204,7 +243,7 @@ function generateHarbors(intersections, edges, boardCenter) {
   return harbors;
 }
 
-function generateConstrainedTerrains(hexAdjacency, terrainCounts) {
+export function generateConstrainedTerrains(hexAdjacency, terrainCounts) {
   const hexCount = hexAdjacency.length;
   const assignment = new Array(hexCount).fill(null);
   const remaining = { ...terrainCounts };
@@ -238,29 +277,44 @@ function generateConstrainedTerrains(hexAdjacency, terrainCounts) {
   return assignment;
 }
 
-export const createBoard = (mapType = "standard") => {
-  const { hexRadius } = MAP_TYPES[mapType] || MAP_TYPES.standard;
+export const createBoard = (mapType = "standard", customBoard = null) => {
+  const mapConfig = MAP_TYPES[mapType] || MAP_TYPES.standard;
   const hexSize = HEX_SIZE_BY_MAP_TYPE[mapType] ?? HEX_SIZE;
-  const axialCoords = generateHexagonAxialCoords(hexRadius);
+  const axialCoords = generateAxialCoords(mapConfig);
   const hexAdjacency = computeHexAdjacency(axialCoords);
   const hexCount = axialCoords.length;
 
-  const terrainCounts = computeTerrainCounts(hexCount);
-  const terrains = generateConstrainedTerrains(hexAdjacency, terrainCounts);
-
-  const landCount = hexCount - terrainCounts.desert;
-  const numbers = generateNumberPool(landCount);
+  let terrains;
+  let numbers;
   let numberIndex = 0;
+
+  if (mapType === "custom" && customBoard?.hexes?.length === hexCount) {
+    // Host hand-placed every terrain + number in the board editor — use
+    // their layout exactly instead of the random constrained generator.
+    terrains = customBoard.hexes.map((h) => h.terrain);
+    numbers = customBoard.hexes.map((h) => h.number);
+  } else {
+    const terrainCounts = computeTerrainCounts(hexCount);
+    terrains = generateConstrainedTerrains(hexAdjacency, terrainCounts);
+    const landCount = hexCount - terrainCounts.desert;
+    numbers = generateNumberPool(landCount);
+  }
 
   const hexes = terrains.map((terrain, index) => {
     const isDesert = terrain === "desert";
     const { q, r } = axialCoords[index];
     const { x, y } = axialToPixel(q, r, hexSize);
+    const number =
+        mapType === "custom" && customBoard?.hexes?.length === hexCount
+            ? numbers[index]
+            : isDesert
+                ? null
+                : numbers[numberIndex++];
     return {
       id: `hex_${index}`,
       terrain,
       resource: TERRAIN_RESOURCE_MAP[terrain],
-      number: isDesert ? null : numbers[numberIndex++],
+      number,
       hasRobber: isDesert,
       q,
       r,

@@ -7,6 +7,7 @@ const BUILD_COSTS = {
   resort: { ore: 3, lumber: 4, wool: 2, brick: 1 },
 };
 
+const ALLOWED_REACTIONS = ["👍", "🤝", "😤", "🎉", "😂", "😱", "🤔", "🔥"];
 const MAX_SETTLEMENTS = 5;
 const MAX_CITIES = 4;
 const MAX_ROADS = 15;
@@ -81,6 +82,8 @@ export const moves = {
 
     G.diceRolled = true;
 
+    if (G.stats) G.stats.diceRolls[roll] = (G.stats.diceRolls[roll] || 0) + 1;
+
     console.log(`Player ${ctx.currentPlayer} rolled ${roll} (mode: ${diceMode})`);
 
     if (roll === 7) {
@@ -100,6 +103,7 @@ export const moves = {
     G.isRobberPlacing = false;
     events.setStage("playing");
     logAction(G, ctx.currentPlayer, "moved the robber");
+    if (G.stats) G.stats.robberMoves[ctx.currentPlayer] = (G.stats.robberMoves[ctx.currentPlayer] || 0) + 1;
 
     const potentialVictims = Object.keys(G.players).filter((pid) => {
       if (pid === ctx.currentPlayer) return false;
@@ -420,6 +424,7 @@ export const moves = {
     console.log(
         `Player ${ctx.currentPlayer} traded ${ratio} ${give} for 1 ${receive} (ratio ${ratio}:1)`,
     );
+    if (G.stats) G.stats.bankTrades[ctx.currentPlayer] = (G.stats.bankTrades[ctx.currentPlayer] || 0) + 1;
     logAction(
         G,
         ctx.currentPlayer,
@@ -478,6 +483,25 @@ export const moves = {
     G.lastTradeStatus = null;
   },
 
+  sendReaction({ G, ctx, playerID }, emoji) {
+    if (!G.reactions) G.reactions = [];
+    if (!ALLOWED_REACTIONS.includes(emoji)) return "INVALID_MOVE";
+
+    const senderId = playerID !== undefined ? playerID : ctx.currentPlayer;
+
+    G.reactions.push({
+      id: `${Date.now()}_${senderId}_${G.reactions.length}`,
+      playerId: senderId,
+      emoji,
+      ts: Date.now(),
+    });
+
+    // Keep a short rolling history — reactions are ephemeral, not a log.
+    if (G.reactions.length > 30) {
+      G.reactions.splice(0, G.reactions.length - 30);
+    }
+  },
+
   sendChat({ G, ctx, playerID }, text) {
     if (typeof text !== "string") return "INVALID_MOVE";
     const trimmed = text.trim().slice(0, 240);
@@ -490,6 +514,7 @@ export const moves = {
       id: `${G.chatMessages.length}_${senderId}_${G.turnCount ?? 0}`,
       playerId: senderId,
       text: trimmed,
+      ts: Date.now(),
     });
 
     if (G.chatMessages.length > 200) {
@@ -521,6 +546,11 @@ export const moves = {
       buyer.resources[offer.give.type] += offer.give.amount;
 
       logAction(G, offer.to, "accepted a trade with {target}", offer.from);
+
+      if (G.stats) {
+        G.stats.playerTrades[offer.from] = (G.stats.playerTrades[offer.from] || 0) + 1;
+        G.stats.playerTrades[offer.to] = (G.stats.playerTrades[offer.to] || 0) + 1;
+      }
 
       G.activeOffer = null;
       events.setActivePlayers({ currentPlayer: "playing" });
@@ -580,6 +610,7 @@ export const moves = {
 
     player.developmentCards.push(card);
     logAction(G, ctx.currentPlayer, "bought a development card");
+    if (G.stats) G.stats.cardsBought[ctx.currentPlayer] = (G.stats.cardsBought[ctx.currentPlayer] || 0) + 1;
 
     if (card.type === "victoryPoint") {
       player.victoryPoints += 1;
@@ -599,6 +630,7 @@ export const moves = {
     player.knightsPlayed += 1;
     G.devCardPlayedThisTurn = true;
     logAction(G, ctx.currentPlayer, "played a Knight card");
+    if (G.stats) G.stats.cardsPlayed[ctx.currentPlayer] = (G.stats.cardsPlayed[ctx.currentPlayer] || 0) + 1;
 
     checkLargestArmy(G, ctx.currentPlayer);
 
@@ -619,6 +651,7 @@ export const moves = {
     player.developmentCards.splice(idx, 1);
     G.devCardPlayedThisTurn = true;
     logAction(G, ctx.currentPlayer, `played Monopoly and claimed all ${resourceLabel(resourceType)}`);
+    if (G.stats) G.stats.cardsPlayed[ctx.currentPlayer] = (G.stats.cardsPlayed[ctx.currentPlayer] || 0) + 1;
 
     let total = 0;
     Object.keys(G.players).forEach((pid) => {
@@ -673,6 +706,7 @@ export const moves = {
         ctx.currentPlayer,
         `played Road Building and built ${placed.length} free road${placed.length > 1 ? "s" : ""}`,
     );
+    if (G.stats) G.stats.cardsPlayed[ctx.currentPlayer] = (G.stats.cardsPlayed[ctx.currentPlayer] || 0) + 1;
     updateLongestRoad(G);
   },
 
@@ -697,6 +731,7 @@ export const moves = {
         ctx.currentPlayer,
         `played Year of Plenty and took a ${resourceLabel(resourceType1)} and a ${resourceLabel(resourceType2)}`,
     );
+    if (G.stats) G.stats.cardsPlayed[ctx.currentPlayer] = (G.stats.cardsPlayed[ctx.currentPlayer] || 0) + 1;
 
     [resourceType1, resourceType2].forEach((resType) => {
       if (takeFromBank(G, resType, 1)) {
@@ -861,11 +896,19 @@ function distributeResourcesLogic({ G, roll, random }) {
     if (supply >= totalDemand) {
       recipients.forEach((pid) => {
         G.players[pid].resources[resType] += byPlayer[pid];
+        if (G.stats?.resourcesCollected[pid]) {
+          G.stats.resourcesCollected[pid][resType] =
+              (G.stats.resourcesCollected[pid][resType] || 0) + byPlayer[pid];
+        }
       });
       bank[resType] = supply - totalDemand;
     } else if (recipients.length === 1) {
       const pid = recipients[0];
       G.players[pid].resources[resType] += supply;
+      if (G.stats?.resourcesCollected[pid]) {
+        G.stats.resourcesCollected[pid][resType] =
+            (G.stats.resourcesCollected[pid][resType] || 0) + supply;
+      }
       bank[resType] = 0;
       console.log(
           `Bank ran short on ${resType}: player ${pid} received ${supply} instead of ${totalDemand}.`,

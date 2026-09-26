@@ -14,13 +14,7 @@ const server = Server({
   origins,
 });
 
-// --- Lobby chat -----------------------------------------------------------
-// Separate from in-game chat (which boardgame.io syncs automatically via
-// G.chatMessages + moves.sendChat). Before a match starts there's no
-// boardgame.io game state to piggyback on, so lobby chat gets its own
-// small REST endpoint that every client polls — same pattern already used
-// for polling the player list.
-const lobbyChats = new Map(); // matchID -> [{ id, name, text, ts }]
+const lobbyChats = new Map();
 const MAX_LOBBY_MESSAGES = 200;
 
 const chatRouter = new Router();
@@ -53,8 +47,36 @@ chatRouter.post("/games/catan/:matchID/chat", koaBody(), (ctx) => {
   ctx.body = { ok: true };
 });
 
-// boardgame.io's Server() only sets up CORS for its own built-in routes,
-// so custom routes need their own CORS handling for the same origins.
+const rematches = new Map();
+
+const rematchRouter = new Router();
+
+rematchRouter.get("/games/catan/:matchID/rematch", (ctx) => {
+  const { matchID } = ctx.params;
+  ctx.body = rematches.get(matchID) || null;
+});
+
+rematchRouter.post("/games/catan/:matchID/rematch", koaBody(), (ctx) => {
+  const { matchID } = ctx.params;
+  const { newMatchID, proposedBy } = ctx.request.body || {};
+
+  if (!newMatchID || !String(newMatchID).trim()) {
+    ctx.status = 400;
+    ctx.body = { error: "newMatchID is required" };
+    return;
+  }
+
+  if (!rematches.has(matchID)) {
+    rematches.set(matchID, {
+      newMatchID: String(newMatchID),
+      proposedBy: proposedBy !== undefined ? String(proposedBy) : null,
+      ts: Date.now(),
+    });
+  }
+
+  ctx.body = rematches.get(matchID);
+});
+
 server.app.use(async (ctx, next) => {
   const origin = ctx.get("Origin");
   if (origins.includes(origin)) {
@@ -71,6 +93,9 @@ server.app.use(async (ctx, next) => {
 
 server.app.use(chatRouter.routes());
 server.app.use(chatRouter.allowedMethods());
+
+server.app.use(rematchRouter.routes());
+server.app.use(rematchRouter.allowedMethods());
 
 server.run(PORT);
 
