@@ -102,6 +102,12 @@ export function computeTerrainCounts(hexCount) {
 }
 
 export function generateNumberPool(landCount) {
+  // Boards with fewer land hexes than there are tokens (e.g. the Compact map)
+  // must draw a random subset. Slicing the *unshuffled* list would always drop
+  // the tail — 9, 10, 11 and 12 — so those rolls would never pay out.
+  if (landCount < NUMBER_TOKENS.length) {
+    return shuffle([...NUMBER_TOKENS]).slice(0, landCount);
+  }
   const pool = [];
   while (pool.length < landCount) pool.push(...NUMBER_TOKENS);
   return shuffle(pool.slice(0, landCount));
