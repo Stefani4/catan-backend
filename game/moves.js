@@ -1,6 +1,13 @@
-import { RESOURCES, DEV_CARD_COST } from "./constants.js";
+import { RESOURCES, DEV_CARD_COST, DRAFT_CONFIG } from "./constants.js";
+import { applyDraftPick, bundleCardsTotal } from "./draft.js";
+import {
+  advanceFlood,
+  isEdgeSubmerged,
+  isHexFlooded,
+  isIntersectionSubmerged,
+} from "./flood.js";
 
-const BUILD_COSTS = {
+export const BUILD_COSTS = {
   road: { brick: 1, lumber: 1 },
   settlement: { brick: 1, lumber: 1, grain: 1, wool: 1 },
   city: { grain: 2, ore: 3 },
@@ -10,7 +17,7 @@ const BUILD_COSTS = {
 const ALLOWED_REACTIONS = ["👍", "🤝", "😤", "🎉", "😂", "😱", "🤔", "🔥"];
 const MAX_SETTLEMENTS = 5;
 const MAX_CITIES = 4;
-const MAX_ROADS = 15;
+export const MAX_ROADS = 15;
 
 const TERRAIN_TO_RES = {
   forest: "lumber",
@@ -99,6 +106,10 @@ export const moves = {
 
   placeRobber({ G, ctx, events, random }, hexId) {
     if (hexId === G.board.robberPosition) return "INVALID_MOVE";
+    if (isHexFlooded(G, hexId)) {
+      console.warn(`placeRobber rejected: hex "${hexId}" is flooded.`);
+      return "INVALID_MOVE";
+    }
     G.board.robberPosition = hexId;
     G.isRobberPlacing = false;
     events.setStage("playing");
@@ -133,6 +144,31 @@ export const moves = {
     }
   },
 
+  // Draft Catan: every drafter picks simultaneously from the pack in front of
+  // them. The caller is identified by `playerID` (ctx.playerID is not set for
+  // moves). `client: false` because other players' packs are hidden from this
+  // client by playerView, so the move can only be resolved authoritatively.
+  draftPick: {
+    move({ G, playerID }, cardId) {
+      if (playerID === undefined || playerID === null) return "INVALID_MOVE";
+      if (!G.draft) return "INVALID_MOVE";
+
+      const error = applyDraftPick(G.draft, playerID, cardId);
+      if (error) {
+        console.warn(`draftPick rejected for player ${playerID}: ${error}`);
+        return "INVALID_MOVE";
+      }
+
+      const card = G.draft.picks[String(playerID)].slice(-1)[0];
+      if (card.kind === "hex") {
+        logAction(G, String(playerID), `drafted a ${card.terrain} hex (${card.number})`);
+      } else {
+        logAction(G, String(playerID), `drafted a resource bundle (${bundleCardsTotal(card.resources)} cards)`);
+      }
+    },
+    client: false,
+  },
+
   buildSettlement({ G, ctx }, intersectionId) {
     if (ctx.playerID && String(ctx.playerID) !== String(ctx.currentPlayer))
       return "INVALID_MOVE";
@@ -149,6 +185,13 @@ export const moves = {
     if (!isDistanceRuleMet(G, intersectionId)) {
       console.warn(
           `buildSettlement rejected: "${intersectionId}" is within one edge of an existing settlement/city (distance rule).`,
+      );
+      return "INVALID_MOVE";
+    }
+
+    if (isIntersectionSubmerged(G, intersectionId)) {
+      console.warn(
+          `buildSettlement rejected: "${intersectionId}" is submerged — every hex around it is flooded.`,
       );
       return "INVALID_MOVE";
     }
@@ -219,7 +262,9 @@ export const moves = {
 
     if (ctx.phase !== "setup") {
       updateLongestRoad(G);
-    } else if (player.settlements.length === 2) {
+    } else if (player.settlements.length === 2 && G.settings?.gameMode !== "draft") {
+      // Standard setup: the second settlement pays out its neighbouring hexes.
+      // Draft mode replaces this grant with the resource cards that were drafted.
       (intersectionData.adjacentHexes || []).forEach((hexId) => {
         const hex = G.board.hexes.find((h) => h.id === hexId);
         const resType = hex && TERRAIN_TO_RES[hex.terrain];
@@ -342,6 +387,11 @@ export const moves = {
       console.warn(
           `buildRoad rejected: edge "${edgeId}" already has a road on it.`,
       );
+      return "INVALID_MOVE";
+    }
+
+    if (isEdgeSubmerged(G, edgeId)) {
+      console.warn(`buildRoad rejected: edge "${edgeId}" is submerged.`);
       return "INVALID_MOVE";
     }
 
@@ -578,7 +628,7 @@ export const moves = {
     }
   },
 
-  endTurn({ G, ctx, events }) {
+  endTurn({ G, ctx, events, random }) {
     if (G.isRobberPlacing) return "INVALID_MOVE";
     logAction(G, ctx.currentPlayer, "ended their turn");
     G.diceRolled = false;
@@ -588,6 +638,18 @@ export const moves = {
 
     if (G.turnCount > 0 && G.turnCount % 5 === 0) {
       advanceSeason(G);
+    }
+
+    if (G.flood) {
+      advanceFlood(G, ctx.numPlayers, (list) => random.Shuffle(list), (count, isFinal) => {
+        logAction(
+            G,
+            ctx.currentPlayer,
+            isFinal
+                ? `🌊 The tide swallowed ${count} hex${count === 1 ? "" : "es"} — this is the final tide!`
+                : `🌊 The tide swallowed ${count} hex${count === 1 ? "" : "es"}`,
+        );
+      });
     }
 
     events.endTurn();
@@ -687,6 +749,7 @@ export const moves = {
       if (seen.has(edgeId)) return "INVALID_MOVE";
       seen.add(edgeId);
       if (!G.board.edges[edgeId]) return "INVALID_MOVE";
+      if (isEdgeSubmerged(G, edgeId)) return "INVALID_MOVE";
       if (player.roads.some((r) => r.id === edgeId)) return "INVALID_MOVE";
     }
 
@@ -745,7 +808,31 @@ export const moves = {
   },
 };
 
-function hasEnoughResources(player, cost) {
+/**
+ * Pays out every drafted resource bundle from the bank. Idempotent (guarded by
+ * `draft.resourcesGranted`) so a repeated phase hook can never pay twice. If the
+ * bank is short of a resource, the player simply gets what's left of it.
+ */
+export function grantDraftStartingResources(G) {
+  const draft = G.draft;
+  if (!draft || draft.resourcesGranted) return;
+  draft.resourcesGranted = true;
+
+  draft.order.forEach((pid) => {
+    const player = G.players[pid];
+    if (!player) return;
+    (draft.picks[pid] || []).forEach((card) => {
+      if (card.kind !== "resources") return;
+      Object.entries(card.resources).forEach(([res, amount]) => {
+        for (let i = 0; i < amount; i++) {
+          if (takeFromBank(G, res, 1)) player.resources[res] += 1;
+        }
+      });
+    });
+  });
+}
+
+export function hasEnoughResources(player, cost) {
   return Object.keys(cost).every((res) => player.resources[res] >= cost[res]);
 }
 
@@ -764,7 +851,7 @@ export function getBestBankRatio(G, playerID, resource) {
   return best;
 }
 
-function ensureBank(G) {
+export function ensureBank(G) {
   if (!G.bank) {
     G.bank = RESOURCES.reduce((acc, r) => {
       acc[r] = 19;
@@ -774,13 +861,13 @@ function ensureBank(G) {
   return G.bank;
 }
 
-function returnToBank(G, resource, amount) {
+export function returnToBank(G, resource, amount) {
   if (amount <= 0) return;
   const bank = ensureBank(G);
   bank[resource] = (bank[resource] || 0) + amount;
 }
 
-function takeFromBank(G, resource, amount) {
+export function takeFromBank(G, resource, amount) {
   const bank = ensureBank(G);
   if ((bank[resource] || 0) < amount) return false;
   bank[resource] -= amount;
@@ -800,7 +887,7 @@ export function isIntersectionConnectedToPlayerRoad(G, playerID, intersectionId)
   return playerRoads.some((road) => adjEdges.includes(road.id));
 }
 
-function distributeResourcesLogic({ G, roll, random }) {
+export function distributeResourcesLogic({ G, roll, random }) {
   const bank = ensureBank(G);
   const seasonsEnabled = !G.settings || G.settings.seasonsEnabled !== false;
   const season = seasonsEnabled ? G.season : null;
@@ -809,7 +896,7 @@ function distributeResourcesLogic({ G, roll, random }) {
   );
 
   if (season === "Winter" && (roll === 2 || roll === 12)) {
-    const activeHex = G.board.hexes.find((h) => h.number === roll);
+    const activeHex = G.board.hexes.find((h) => h.number === roll && !h.flooded);
     if (activeHex) {
       G.board.robberPosition = activeHex.id;
       console.log(`Winter: Robber moved to hex ${activeHex.id}`);
@@ -848,7 +935,7 @@ function distributeResourcesLogic({ G, roll, random }) {
       }
     }
 
-    if (shouldProduce && hex.id !== G.board.robberPosition) {
+    if (shouldProduce && !hex.flooded && hex.id !== G.board.robberPosition) {
       if (season === "Spring" && (roll === 6 || roll === 8)) {
         if (hex.terrain === "fields" || hex.terrain === "pasture") {
           sAmount += 1;
@@ -880,6 +967,12 @@ function distributeResourcesLogic({ G, roll, random }) {
         (p.resorts || []).forEach((r) => {
           if (r?.adjacentHexes?.includes(hex.id)) amount += cAmount;
         });
+
+        // Draft Catan: a claimed hex pays its owner a flat bonus whenever its
+        // own number is rolled, whether or not they've built next to it.
+        if (hex.number === roll && G.draft?.claims?.[hex.id] === pId) {
+          amount += DRAFT_CONFIG.hexClaimBonus;
+        }
 
         if (amount > 0) {
           earnings[resType][pId] = (earnings[resType][pId] || 0) + amount;
@@ -950,7 +1043,7 @@ export function isDistanceRuleMet(G, intId) {
   );
 }
 
-function isConnectedToPlayer(G, playerID, edgeId) {
+export function isConnectedToPlayer(G, playerID, edgeId) {
   const player = G.players[playerID];
 
   const boardEdge = G.board.edges ? G.board.edges[edgeId] : null;
@@ -980,7 +1073,7 @@ function isConnectedToPlayer(G, playerID, edgeId) {
   return touchesSettlement || touchesCity || touchesResort || touchesRoad;
 }
 
-function isEdgeAdjacentToIntersection(G, edgeId, intersectionId) {
+export function isEdgeAdjacentToIntersection(G, edgeId, intersectionId) {
   const intersection = G.board.intersections[intersectionId];
   return intersection.adjacentEdges.includes(edgeId);
 }

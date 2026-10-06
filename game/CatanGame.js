@@ -1,6 +1,8 @@
 import { setup } from "./setup.js";
-import { moves } from "./moves.js";
+import { moves, grantDraftStartingResources } from "./moves.js";
 import { GAME_SETTINGS_DEFAULTS } from "./constants.js";
+import { maskDraftForPlayer } from "./draft.js";
+import { isTideGameOver, pickTideWinner } from "./flood.js";
 import { ActivePlayers } from "boardgame.io/dist/cjs/core.js";
 
 export const CatanGame = {
@@ -21,11 +23,40 @@ export const CatanGame = {
     if (winnerId) {
       return { winner: winnerId };
     }
+
+    // Shrinking board: once the last tide has come in and the grace rounds are
+    // up, the VP leader takes the island. Guarantees the mode always finishes.
+    if (isTideGameOver(G)) {
+      return { winner: pickTideWinner(G), reason: "tide" };
+    }
   },
 
   phases: {
-    setup: {
+    // Draft Catan only. In every other mode `G.draft` is null so this phase
+    // ends the instant the game starts and play begins in "setup" as before.
+    draft: {
       start: true,
+      next: "setup",
+      endIf: ({ G }) => !G.draft || G.draft.complete,
+      onEnd: ({ G }) => {
+        // No-op outside Draft mode (G.draft is null there).
+        grantDraftStartingResources(G);
+      },
+      turn: {
+        activePlayers: { all: "drafting" },
+        stages: {
+          drafting: {
+            moves: {
+              draftPick: moves.draftPick,
+              sendChat: moves.sendChat,
+              sendReaction: moves.sendReaction,
+            },
+          },
+        },
+      },
+    },
+
+    setup: {
       next: "main",
       turn: {
         onBegin: ({ G }) => {
@@ -138,6 +169,8 @@ export const CatanGame = {
 
     return {
       ...G,
+      // Other players' draft packs stay hidden until the draft is over.
+      draft: G.draft ? maskDraftForPlayer(G.draft, playerID) : G.draft,
       players: Object.fromEntries(
           Object.entries(G.players).map(([pid, player]) => {
             if (pid === playerID) return [pid, player];

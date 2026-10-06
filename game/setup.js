@@ -1,5 +1,7 @@
 import { createPlayer } from "./players.js";
 import { createBoard } from "./board.js";
+import { createDraft } from "./draft.js";
+import { createFloodState } from "./flood.js";
 import {
   DEV_CARD_DECK_COMPOSITION,
   VP_CARD_NAMES,
@@ -46,10 +48,22 @@ export const setup = ({ ctx }, setupData) => {
     robberMoves[i.toString()] = 0;
   }
 
+  const board = createBoard(settings.mapType, settings.customBoard);
+
   return {
     players,
     settings,
-    board: createBoard(settings.mapType, settings.customBoard),
+    board,
+    // Game-mode state. Both are null outside their own mode, which is what the
+    // rest of the engine (and the UI) keys off.
+    draft:
+        settings.gameMode === "draft"
+            ? createDraft(board, Object.keys(players))
+            : null,
+    flood:
+        settings.gameMode === "shrinking"
+            ? createFloodState(board, ctx.numPlayers)
+            : null,
     diceValue: null,
     diceRolled: false,
     turnCount: 0,
